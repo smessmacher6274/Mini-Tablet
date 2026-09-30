@@ -1,0 +1,15 @@
+build/
+build-esp32/
+sdkconfig
+sdkconfig.old
+managed_components/
+portrait-build.log
+build-display/
+display-build.log
+pico-sdk/
+
+build-esp32-wsl/
+pen-build.log
+ui-build.log
+network-build.log
+main/network_config.h

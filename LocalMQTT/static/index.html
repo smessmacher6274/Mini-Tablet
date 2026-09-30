@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Note Tablet · To-do desk</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><a class="brand" href="/">NOTE TABLET <span>/ LOCAL DESK</span></a><span id="connection" class="badge">Connecting…</span></header>
+    <section class="intro"><p class="eyebrow">A LITTLE LESS TO REMEMBER</p><h1>Make room for<br>what’s next.</h1><p>Add a task here. Your list is saved on this computer<br class="desktop"> and published to the local MQTT broker.</p></section>
+    <section class="workspace" aria-label="To-do list">
+      <div class="list-heading"><div><p class="eyebrow">YOUR FIRST LIST</p><h2>Inbox <span id="count">0</span></h2></div><span id="progress">Ready when you are</span></div>
+      <form id="add-form"><label class="sr-only" for="title">New task</label><input id="title" name="title" maxlength="120" placeholder="What do you need to do?" autocomplete="off" required><button id="add-button" type="submit">Add task <span aria-hidden="true">＋</span></button></form>
+      <p id="error" role="alert" hidden></p>
+      <nav class="filters" aria-label="Filter tasks"><button data-filter="all" aria-pressed="true">All</button><button data-filter="active" aria-pressed="false">To do</button><button data-filter="done" aria-pressed="false">Completed</button></nav>
+      <div id="empty"><span class="empty-icon" aria-hidden="true">✓</span><h3>A clear page.</h3><p>Add your first task above.</p></div>
+      <ul id="items" aria-label="Tasks"></ul>
+      <footer class="list-footer"><span id="saved">Loading saved list…</span><span>Up to 50 tasks</span></footer>
+    </section>
+    <aside><span class="status-dot"></span><div><strong id="device-heading">Waiting for tablet</strong><p id="device-status">Connect the ESP32 to Wi-Fi to receive this list.</p></div></aside>
+    <details><summary>Local connection details</summary><dl><dt>Broker</dt><dd id="broker">127.0.0.1:1883</dd><dt>State topic</dt><dd id="topic">Loading…</dd><dt>Storage</dt><dd>SQLite on this computer</dd></dl></details>
+  </main>
+</body>
+</html>
