@@ -1,4 +1,7 @@
 #include "ble.h"
+#include "tablet_tasks.h"
+#include "network.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "esp_log.h"
@@ -19,6 +22,90 @@ static ble_uuid128_t service_uuid = BLE_UUID128_INIT(
 static const ble_uuid128_t greeting_uuid = BLE_UUID128_INIT(
     0xf1,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
     0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const ble_uuid128_t add_task_uuid = BLE_UUID128_INIT(
+    0xf2,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const ble_uuid128_t status_uuid = BLE_UUID128_INIT(
+    0xf3,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const char *last_result = "READY";
+static const ble_uuid128_t wifi_ssid_uuid = BLE_UUID128_INIT(
+    0xf4,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const ble_uuid128_t wifi_password_uuid = BLE_UUID128_INIT(
+    0xf5,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const ble_uuid128_t wifi_apply_uuid = BLE_UUID128_INIT(
+    0xf6,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static const ble_uuid128_t wifi_status_uuid = BLE_UUID128_INIT(
+    0xf7,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12,
+    0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12);
+static wifi_settings_t staged_wifi;
+static const char *wifi_result;
+
+static int wifi_access(uint16_t connection, uint16_t attribute,
+                       struct ble_gatt_access_ctxt *context, void *arg) {
+    if (ble_uuid_cmp(context->chr->uuid, &wifi_status_uuid.u) == 0) {
+        if (context->op != BLE_GATT_ACCESS_OP_READ_CHR) return BLE_ATT_ERR_READ_NOT_PERMITTED;
+        const char *value = wifi_result ? wifi_result : tablet_network_status();
+        return os_mbuf_append(context->om, value, strlen(value)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+    }
+    if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+    char value[64] = {0};
+    uint16_t length = 0;
+    if (OS_MBUF_PKTLEN(context->om) > 63 ||
+        ble_hs_mbuf_to_flat(context->om, value, 63, &length)) {
+        wifi_settings_clear(&staged_wifi);
+        wifi_result = "ERR LENGTH";
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    int result = 0;
+    if (ble_uuid_cmp(context->chr->uuid, &wifi_ssid_uuid.u) == 0) {
+        if (wifi_settings_ssid(&staged_wifi, value, length)) wifi_result = "SSID READY";
+        else { wifi_result = "ERR SSID"; result = 0x80; }
+    } else if (ble_uuid_cmp(context->chr->uuid, &wifi_password_uuid.u) == 0) {
+        if (wifi_settings_password(&staged_wifi, value, length)) wifi_result = "PASSWORD READY";
+        else { wifi_result = "ERR PASSWORD"; result = 0x80; }
+    } else {
+        if (length != 5 || memcmp(value, "APPLY", 5)) { wifi_result = "SEND APPLY"; result = 0x80; }
+        else if (!wifi_settings_ready(&staged_wifi)) { wifi_result = "SET SSID PASSWORD"; result = 0x80; }
+        else if (!tablet_network_set_wifi(&staged_wifi)) { wifi_result = "BUSY RETRY APPLY"; result = BLE_ATT_ERR_INSUFFICIENT_RES; }
+        else { wifi_settings_clear(&staged_wifi); wifi_result = NULL; }
+    }
+    volatile char *secret = value;
+    for (size_t n = 0; n < sizeof(value); ++n) secret[n] = 0;
+    return result;
+}
+
+static int add_task(uint16_t connection, uint16_t attribute,
+                    struct ble_gatt_access_ctxt *context, void *arg) {
+    if (context->op != BLE_GATT_ACCESS_OP_WRITE_CHR) return BLE_ATT_ERR_WRITE_NOT_PERMITTED;
+    unsigned length = OS_MBUF_PKTLEN(context->om);
+    if (!length || length > TODO_MAX_TITLE) {
+        last_result = "ERR LENGTH";
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    char text[TODO_MAX_TITLE + 1];
+    uint16_t copied;
+    if (ble_hs_mbuf_to_flat(context->om, text, TODO_MAX_TITLE, &copied) || copied != length)
+        return BLE_ATT_ERR_UNLIKELY;
+    text[length] = '\0';
+    task_add_result_t result = tablet_tasks_add(text, length);
+    if (result == TASK_ADD_INVALID) { last_result = "ERR TEXT"; return 0x80; }
+    if (result == TASK_ADD_FULL) { last_result = "ERR FULL"; return BLE_ATT_ERR_INSUFFICIENT_RES; }
+    last_result = "OK RAM";
+    ESP_LOGI(TAG, "BLE task accepted in RAM (%u/%u)", tablet_tasks_local_count(), TODO_LOCAL_ITEMS);
+    return 0;
+}
+
+static int read_status(uint16_t connection, uint16_t attribute,
+                       struct ble_gatt_access_ctxt *context, void *arg) {
+    if (context->op != BLE_GATT_ACCESS_OP_READ_CHR) return BLE_ATT_ERR_READ_NOT_PERMITTED;
+    char value[32];
+    snprintf(value, sizeof(value), "%s %u/%u", last_result, tablet_tasks_local_count(), TODO_LOCAL_ITEMS);
+    return os_mbuf_append(context->om, value, strlen(value)) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
 
 static void check_ble(int rc) {
     if (rc) {
@@ -45,6 +132,18 @@ static const struct ble_gatt_svc_def services[] = {
         .characteristics = (struct ble_gatt_chr_def[]) {
             { .uuid = &greeting_uuid.u, .access_cb = read_greeting,
               .flags = BLE_GATT_CHR_F_READ },
+            { .uuid = &add_task_uuid.u, .access_cb = add_task,
+              .flags = BLE_GATT_CHR_F_WRITE },
+            { .uuid = &status_uuid.u, .access_cb = read_status,
+              .flags = BLE_GATT_CHR_F_READ },
+            { .uuid = &wifi_ssid_uuid.u, .access_cb = wifi_access,
+              .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC },
+            { .uuid = &wifi_password_uuid.u, .access_cb = wifi_access,
+              .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC },
+            { .uuid = &wifi_apply_uuid.u, .access_cb = wifi_access,
+              .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_ENC },
+            { .uuid = &wifi_status_uuid.u, .access_cb = wifi_access,
+              .flags = BLE_GATT_CHR_F_READ },
             {0}
         }
     },
@@ -60,6 +159,8 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
             if (event->connect.status != 0) advertise();
             break;
         case BLE_GAP_EVENT_DISCONNECT:
+            wifi_settings_clear(&staged_wifi);
+            wifi_result = NULL;
             ESP_LOGI(TAG, "Disconnected, reason %d", event->disconnect.reason);
             advertise();
             break;
@@ -100,6 +201,8 @@ static void on_sync(void) {
 }
 
 static void on_reset(int reason) {
+    wifi_settings_clear(&staged_wifi);
+    wifi_result = NULL;
     ESP_LOGW(TAG, "Bluetooth host reset: %d", reason);
 }
 
@@ -118,6 +221,7 @@ void tablet_ble_start(void) {
     }
     ESP_ERROR_CHECK(rc);
     ESP_ERROR_CHECK(nimble_port_init());
+    check_ble(ble_att_set_preferred_mtu(185));
     ble_svc_gap_init();
     ble_svc_gatt_init();
     check_ble(ble_svc_gap_device_name_set("NoteTablet-BLE"));
@@ -125,5 +229,10 @@ void tablet_ble_start(void) {
     check_ble(ble_gatts_add_svcs(services));
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
+    // Encrypt credential writes with Just Works pairing; no persistent bonds yet.
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;
+    ble_hs_cfg.sm_sc = 1;
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_bonding = 0;
     nimble_port_freertos_init(host_task);
 }

@@ -6,10 +6,13 @@
 #include "ui.h"
 #include "display.h"
 #include "network.h"
+#include "tablet_tasks.h"
 
 static bool pending;
 static todo_snapshot_t update;
-bool tablet_network_take(todo_snapshot_t *out) {
+static int completions;
+bool tablet_tasks_complete(const todo_item_t *item) { ++completions; return true; }
+bool tablet_tasks_take(todo_snapshot_t *out) {
     if (!pending) return false;
     *out = update; pending = false; return true;
 }
@@ -20,10 +23,16 @@ static int64_t now = 1000000;
 static int restores, strokes;
 static bool erase_mode;
 static char page[24];
+static int clears, large_fills, second_row_labels, draws;
 int64_t esp_timer_get_time(void) { return now; }
-void display_clear(void) {}
-void display_rect(unsigned x, unsigned y, unsigned w, unsigned h, unsigned short c) {}
+void display_clear(void) { ++clears; ++draws; }
+void display_rect(unsigned x, unsigned y, unsigned w, unsigned h, unsigned short c) {
+    ++draws;
+    if (w * h > 10000) ++large_fills;
+}
 void display_label(unsigned x, unsigned y, const char *s, unsigned n, unsigned short c) {
+    ++draws;
+    if (x == 44 && y >= 232 && y < 348) ++second_row_labels;
     if (!strncmp(s, "PAGE ", 5)) snprintf(pagination, sizeof(pagination), "%s", s);
     if (!strcmp(s, "TAP TO OPEN") || !strcmp(s, "YOUR TABLET") || !strcmp(s, "NO TASKS YET") || !strcmp(s, "WAITING FOR LIST"))
         snprintf(page, sizeof(page), "%s", s);
@@ -50,8 +59,23 @@ int main(void) {
     assert(restores == 0);
     tap(100, 170);
     assert(!strcmp(page, "WAITING FOR LIST"));
-    update.count = 3; pending = true; ui_tick();
+    update.count = 3;
+    strcpy(update.items[0].title, "First task");
+    strcpy(update.items[1].title, "Second task");
+    strcpy(update.items[2].title, "Third task");
+    pending = true; ui_tick();
     assert(!strcmp(pagination, "PAGE 1 / 2"));
+    tap(24, 120);
+    assert(completions == 1);
+    ui_touch(true, 24, 120);
+    assert(completions == 1); // Holding the pen cannot repeat the command.
+    int before_clear = clears, before_fill = large_fills, before_second = second_row_labels;
+    update.items[0].completed = true; pending = true; ui_tick();
+    assert(clears == before_clear && large_fills == before_fill);
+    assert(second_row_labels == before_second);
+    int before_draws = draws;
+    pending = true; ui_tick();
+    assert(draws == before_draws); // Unchanged snapshots draw nothing.
     tap(220, 380);
     assert(!strcmp(pagination, "PAGE 2 / 2"));
     update.count = 0; pending = true; ui_tick();

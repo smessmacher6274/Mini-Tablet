@@ -29,6 +29,15 @@ bool todo_parse(const char *data, size_t length, todo_snapshot_t *out) {
         cJSON *item = cJSON_GetArrayItem(items, i);
         cJSON *title = cJSON_GetObjectItemCaseSensitive(item, "title");
         cJSON *completed = cJSON_GetObjectItemCaseSensitive(item, "completed");
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(item, "id");
+        cJSON *item_revision = cJSON_GetObjectItemCaseSensitive(item, "revision");
+        if (!cJSON_IsString(id) || strlen(id->valuestring) != 36 ||
+            strspn(id->valuestring, "0123456789abcdefABCDEF-") != 36 ||
+            !cJSON_IsNumber(item_revision) || item_revision->valuedouble < 0 ||
+            item_revision->valuedouble > INT_MAX || item_revision->valuedouble != item_revision->valueint)
+            goto done;
+        memcpy(out->items[i].id, id->valuestring, 37);
+        out->items[i].revision = item_revision->valueint;
         if (!cJSON_IsString(title) || !cJSON_IsBool(completed)) goto done;
         size_t n = strlen(title->valuestring);
         if (!n || n > TODO_MAX_TITLE) goto done;
@@ -36,6 +45,7 @@ bool todo_parse(const char *data, size_t length, todo_snapshot_t *out) {
             if ((unsigned char)title->valuestring[j] < 32 || title->valuestring[j] == 127) goto done;
         memcpy(out->items[i].title, title->valuestring, n + 1);
         out->items[i].completed = cJSON_IsTrue(completed);
+        out->items[i].local = false;
         out->count++;
     }
     out->revision = revision->valueint;

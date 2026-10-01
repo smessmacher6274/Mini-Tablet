@@ -26,6 +26,9 @@ def main():
     output = '#pragma once\n// Local secrets: do not commit this file.\n'
     output += ''.join(f'#define {key} {literal(value)}\n' for key, value in values.items())
     (ROOT / "main" / "network_config.h").write_text(output)
+    # A first build without the optional header cannot track it as a dependency.
+    # Force this source to rebuild when configuration is created afterward.
+    (ROOT / "main" / "network.c").touch()
     print("Saved main/network_config.h. Now build and flash from your ESP-IDF shell.")
 
 

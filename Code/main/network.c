@@ -12,18 +12,22 @@
 #include <stdio.h>
 #include <string.h>
 
-#if __has_include("network_config.h")
 #include "network_config.h"
-#else
-#define TABLET_WIFI_SSID ""
-#define TABLET_WIFI_PASSWORD ""
-#define TABLET_MQTT_URI ""
-#define TABLET_MQTT_USER ""
-#define TABLET_MQTT_PASSWORD ""
-#endif
+
+_Static_assert(sizeof(TABLET_WIFI_SSID) > 1 && sizeof(TABLET_WIFI_SSID) <= 33,
+               "Run setup_network.py: Wi-Fi SSID must be 1-32 bytes");
+_Static_assert(sizeof(TABLET_WIFI_PASSWORD) <= 64, "Wi-Fi password too long");
+_Static_assert(sizeof(TABLET_MQTT_URI) > 1 && sizeof(TABLET_MQTT_PASSWORD) > 1,
+               "Run setup_network.py: MQTT configuration is missing");
 
 #define WIFI_READY BIT0
 #define MQTT_READY BIT1
+#define WIFI_FAILED BIT2
+#define WIFI_APPLYING BIT3
+#define WIFI_SERVICE_READY BIT4
+ESP_EVENT_DEFINE_BASE(TABLET_WIFI_EVENT);
+static bool switching_wifi;
+static unsigned wifi_failures;
 static const char *TAG = "tablet_net";
 static const char *STATE_TOPIC = "notepad/v1/devices/tablet-001/state";
 static const char *PRESENCE_TOPIC = "notepad/v1/devices/tablet-001/presence";
@@ -100,13 +104,44 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 }
 
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) esp_wifi_connect();
+    if (base == TABLET_WIFI_EVENT) {
+        wifi_settings_t *settings = data;
+        switching_wifi = true;
+        wifi_failures = 0;
+        xEventGroupClearBits(status_bits, WIFI_READY | MQTT_READY | WIFI_FAILED);
+        xEventGroupSetBits(status_bits, WIFI_APPLYING);
+        wifi_config_t wifi = {0};
+        memcpy(wifi.sta.ssid, settings->ssid, strlen(settings->ssid));
+        memcpy(wifi.sta.password, settings->password, strlen(settings->password));
+        wifi.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        esp_err_t rc = esp_wifi_stop();
+        if (rc == ESP_OK) rc = esp_wifi_set_config(WIFI_IF_STA, &wifi);
+        if (rc == ESP_OK) rc = esp_wifi_start();
+        volatile unsigned char *secret = (volatile unsigned char *)&wifi;
+        for (size_t n = 0; n < sizeof(wifi); ++n) secret[n] = 0;
+        wifi_settings_clear(settings);
+        if (rc != ESP_OK) {
+            switching_wifi = false;
+            xEventGroupClearBits(status_bits, WIFI_APPLYING);
+            xEventGroupSetBits(status_bits, WIFI_FAILED);
+            ESP_LOGW(TAG, "Wi-Fi configuration failed: %s", esp_err_to_name(rc));
+        }
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        switching_wifi = false;
+        xEventGroupClearBits(status_bits, WIFI_APPLYING);
+        esp_wifi_connect();
+    }
     else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(status_bits, WIFI_READY | MQTT_READY);
+        if (switching_wifi) return;
+        if (++wifi_failures >= 5) xEventGroupSetBits(status_bits, WIFI_FAILED);
         wifi_event_sta_disconnected_t *event = data;
         ESP_LOGW(TAG, "Wi-Fi disconnected (reason %u); retrying", event->reason);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        if (switching_wifi) return;
+        wifi_failures = 0;
+        xEventGroupClearBits(status_bits, WIFI_FAILED | WIFI_APPLYING);
         xEventGroupSetBits(status_bits, WIFI_READY);
         ESP_LOGI(TAG, "Wi-Fi ready");
     }
@@ -148,6 +183,7 @@ void tablet_network_start(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&init));
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(TABLET_WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL));
     wifi_config_t wifi = {0};
     memcpy(wifi.sta.ssid, TABLET_WIFI_SSID, strlen(TABLET_WIFI_SSID));
     memcpy(wifi.sta.password, TABLET_WIFI_PASSWORD, strlen(TABLET_WIFI_PASSWORD));
@@ -157,15 +193,40 @@ void tablet_network_start(void) {
     ESP_ERROR_CHECK(esp_wifi_start());
     if (xTaskCreate(connection_task, "tablet_mqtt", 4096, NULL, 4, NULL) != pdPASS)
         ESP_LOGE(TAG, "Could not start network task");
+    xEventGroupSetBits(status_bits, WIFI_SERVICE_READY);
+}
+
+bool tablet_network_set_wifi(const wifi_settings_t *settings) {
+    if (!configured || !status_bits || !wifi_settings_ready(settings)) return false;
+    EventBits_t bits = xEventGroupGetBits(status_bits);
+    if (!(bits & WIFI_SERVICE_READY) || (bits & WIFI_APPLYING)) return false;
+    xEventGroupSetBits(status_bits, WIFI_APPLYING);
+    // Copy into the event queue; never stop/start Wi-Fi in the BLE host task.
+    bool sent = esp_event_post(TABLET_WIFI_EVENT, 0, settings, sizeof(*settings), 0) == ESP_OK;
+    if (!sent) xEventGroupClearBits(status_bits, WIFI_APPLYING);
+    return sent;
 }
 
 bool tablet_network_take(todo_snapshot_t *snapshot) {
     return updates && xQueueReceive(updates, snapshot, 0) == pdTRUE;
 }
 
+bool tablet_network_complete(const todo_item_t *item) {
+    if (!mqtt || !status_bits || !(xEventGroupGetBits(status_bits) & MQTT_READY)) return false;
+    char payload[180];
+    snprintf(payload, sizeof(payload),
+             "{\"id\":\"%s\",\"base_revision\":%ld,\"completed\":%s}",
+             item->id, (long)item->revision, item->completed ? "false" : "true");
+    // Explicit desired state plus base revision makes QoS1 duplicates harmless.
+    return esp_mqtt_client_enqueue(mqtt, "notepad/v1/devices/tablet-001/commands",
+                                   payload, 0, 1, 0, true) >= 0;
+}
+
 const char *tablet_network_status(void) {
     if (!configured || !status_bits) return "WIFI NOT SET";
     EventBits_t bits = xEventGroupGetBits(status_bits);
+    if (bits & WIFI_APPLYING) return "WIFI APPLYING";
+    if (bits & WIFI_FAILED) return "WIFI FAILED RETRY";
     if (!(bits & WIFI_READY)) return "WIFI CONNECTING";
     if (!(bits & MQTT_READY)) return "MQTT CONNECTING";
     return "MQTT CONNECTED";

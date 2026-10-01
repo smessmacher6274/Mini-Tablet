@@ -9,13 +9,16 @@ navigation and the 60-second idle timeout in a 16,960-byte monochrome RAM buffer
 Reset/power loss still clears the note. The idle screen is not hardware sleep.
 
 The To-do view receives the computer's list over Wi-Fi/MQTT, with two tasks per
-page and Prev/Next controls. Edit tasks in the computer browser for now.
+page and Prev/Next controls. Tap a checkbox to complete/reopen while connected;
+the server-confirmed snapshot updates the display. Titles are edited in the browser.
 See `../LocalMQTT/README.md` for the server and Windows firewall setup.
 Run `python3 setup_network.py` in this directory before flashing to enter Wi-Fi
-credentials locally and import the generated MQTT credentials. Without this
-configuration, navigation and BLE work but Wi-Fi is disabled.
+credentials locally and import the generated MQTT credentials. This configuration
+is required to build; older firmware silently disabled Wi-Fi when it was missing.
 The clock still displays `--:--` / `TIME NOT SET`; time synchronization is later.
-BLE remains enabled. Phone access and tablet-side task edits are not yet enabled.
+BLE now supports text task entry from a phone testing app, with offline local
+checkboxes. See [BLE.md](BLE.md). Local tasks remain in RAM and are separate
+from the computer's list; a companion app and cross-transport sync are later.
 
 Flash from the activated WSL shell, inside the **Code** directory:
 

@@ -6,7 +6,7 @@ static todo_snapshot_t snapshot;
 static bool parse(const char *s) { return todo_parse(s, strlen(s), &snapshot); }
 #define PREFIX "{\"schema_version\":1,\"device_id\":\"tablet-001\",\"list_id\":\"inbox\",\"revision\":7,\"items\":"
 int main(void) {
-    assert(parse(PREFIX "[{\"title\":\"Buy milk\",\"completed\":true}]}"));
+    assert(parse(PREFIX "[{\"id\":\"12345678-1234-1234-1234-123456789abc\",\"revision\":7,\"title\":\"Buy milk\",\"completed\":true}]}"));
     assert(snapshot.revision == 7 && snapshot.count == 1);
     assert(snapshot.items[0].completed && !strcmp(snapshot.items[0].title, "Buy milk"));
     assert(parse(PREFIX "[]}"));

@@ -12,4 +12,5 @@ build-esp32-wsl/
 pen-build.log
 ui-build.log
 network-build.log
+ble-build.log
 main/network_config.h
