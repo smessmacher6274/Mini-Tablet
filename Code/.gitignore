@@ -2,6 +2,8 @@ build/
 build-esp32/
 sdkconfig
 sdkconfig.old
+sdkconfig.ble-flow-off
+sdkconfig.ble-flow-off.old
 managed_components/
 portrait-build.log
 build-display/

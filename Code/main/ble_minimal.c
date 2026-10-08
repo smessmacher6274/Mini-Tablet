@@ -6,6 +6,7 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nimble/nimble_npl.h"
+#include "os/os_mempool.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
@@ -17,6 +18,25 @@ static bool connected;
 static unsigned writes, reads;
 static char last_write[121];
 static struct ble_npl_callout retry;
+static void log_packet_pools(void) {
+    struct os_mempool *pool = NULL;
+    struct os_mempool_info info;
+    while ((pool = os_mempool_info_get_next(pool, &info)) != NULL) {
+        ESP_LOGI(TAG, "Pool %s free=%d/%d min=%d block=%d",
+                 info.omi_name, info.omi_num_free, info.omi_num_blocks,
+                 info.omi_min_free, info.omi_block_size);
+    }
+}
+static void log_link(uint16_t handle) {
+    struct ble_gap_conn_desc desc;
+    int rc = ble_gap_conn_find(handle, &desc);
+    if (!rc) {
+        ESP_LOGI(TAG, "Link handle=%u interval_units=%u latency=%u timeout_units=%u",
+                 handle, desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+    } else {
+        ESP_LOGW(TAG, "Link lookup failed=%d", rc);
+    }
+}
 #define UUID(suffix) BLE_UUID128_INIT(suffix,0xde,0xbc,0x9a,0x78,0x56,0x34,0x12, \
                                      0x78,0x56,0x34,0x12,0x78,0x56,0x34,0x12)
 static ble_uuid128_t service_uuid = UUID(0xf0);
@@ -39,15 +59,20 @@ static int access_value(uint16_t connection, uint16_t attribute,
         last_write[length] = '\0';
         ++writes;
         ESP_LOGI(TAG, "Write accepted count=%u bytes=%u", writes, length);
+        log_packet_pools();
         return 0;
     }
     if (ctx->op != BLE_GATT_ACCESS_OP_READ_CHR) return BLE_ATT_ERR_READ_NOT_PERMITTED;
     ++reads;
-    if (ble_uuid_cmp(ctx->chr->uuid, &greeting_uuid.u) == 0)
-        return os_mbuf_append(ctx->om, "What it do", 10) ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+    bool greeting = ble_uuid_cmp(ctx->chr->uuid, &greeting_uuid.u) == 0;
     char status[48];
     snprintf(status, sizeof(status), "WRITES %u READS %u", writes, reads);
-    return os_mbuf_append(ctx->om, status, strlen(status)) ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+    int rc = greeting ? os_mbuf_append(ctx->om, "What it do", 10)
+                      : os_mbuf_append(ctx->om, status, strlen(status));
+    ESP_LOGI(TAG, "Read count=%u characteristic=%s append_rc=%d",
+             reads, greeting ? "f1" : "f3", rc);
+    log_packet_pools();
+    return rc ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
 }
 
 static const struct ble_gatt_svc_def services[] = {
@@ -72,12 +97,15 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
     case BLE_GAP_EVENT_CONNECT:
         connected = event->connect.status == 0;
         ESP_LOGI(TAG, "Connect status=%d", event->connect.status);
+        if (connected) log_link(event->connect.conn_handle);
+        log_packet_pools();
         if (!connected) schedule_retry();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
         connected = false;
         ESP_LOGI(TAG, "Disconnect reason=%d writes=%u reads=%u",
                  event->disconnect.reason, writes, reads);
+        log_packet_pools();
         schedule_retry();
         break;
     case BLE_GAP_EVENT_ADV_COMPLETE: schedule_retry(); break;
@@ -86,6 +114,7 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         break;
     case BLE_GAP_EVENT_CONN_UPDATE:
         ESP_LOGI(TAG, "Timing update status=%d", event->conn_update.status);
+        log_link(event->conn_update.conn_handle);
         break;
     default: break;
     }
