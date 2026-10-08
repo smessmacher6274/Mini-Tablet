@@ -14,3 +14,20 @@ ui-build.log
 network-build.log
 ble-build.log
 main/network_config.h
+
+
+# Build directories at any depth
+**/build*/
+**/cmake-build-*/
+
+# Markdown files at any depth
+*.[mM][dD]
+
+# Local tooling and temporary output
+.vscode/
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp

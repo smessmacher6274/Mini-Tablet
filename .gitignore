@@ -1,0 +1,46 @@
+# Local documentation (all case variants, at any depth)
+*.[mM][dD]
+
+# Generated builds and downloaded SDK/components
+build/
+build-*/
+cmake-build-*/
+managed_components/
+pico-sdk/
+sdkconfig
+sdkconfig.old
+
+# Local environments, caches, logs, and editor settings
+.venv/
+.venv-*/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+*.pid
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.swp
+*~
+.env
+.env.*
+!.env.example
+
+# Local credentials and runtime database
+/Code/main/network_config.h
+/LocalMQTT/data/
+
+# CAD autosaves, backups, and per-user preferences
+*-backups/
+*.bak
+*.kicad_prl
+*.lck
+~*.lck
+_autosave-*

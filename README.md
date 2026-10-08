@@ -23,15 +23,15 @@ preserved under `Code/legacy/pico/`.
 | Computer task editor | Add, edit, complete/reopen, delete, and filter tasks |
 | Task storage | SQLite on the computer |
 | Wi-Fi/MQTT | Authenticated LAN subscription and tablet receipt status |
-| Tablet to-do view | Two tasks per page, Prev/Next; editing stays on the computer |
-| BLE | Advertises `NoteTablet-BLE` with a readable greeting |
-| BLE task transfer / Wi-Fi setup | Proposed, not implemented |
+| Tablet to-do view | Two tasks per page, Prev/Next; tap a checkbox to complete/reopen online |
+| BLE | Greeting plus text task entry; 20 device-local RAM tasks with offline checkboxes |
+| BLE Wi-Fi setup | Encrypted SSID/password writes and Apply; settings last until reset |
 | iPhone app, dictation, handwriting recognition | Planned |
 | Tablet flash persistence | Deferred: notes, tasks, and calibration are not saved by the app |
 
-Display/BLE and navigation have been exercised during development. The MQTT
-firmware builds and host tests pass; an on-device Wi-Fi/MQTT connection still
-needs confirmation after configuring and flashing the board.
+Display/BLE, navigation, MQTT delivery, task completion and partial redraws have
+been confirmed on hardware. BLE task entry builds and passes host tests; its
+phone-to-tablet path still needs checking after flashing this update.
 
 ## Project layout
 
@@ -208,8 +208,9 @@ idf.py -B build-esp32-wsl -p /dev/ttyUSB0 flash monitor
 The setup script asks for the Wi-Fi network name, a hidden Wi-Fi password, and
 the computer LAN IP. Press Enter to accept the bracketed IP if it is correct.
 It imports the MQTT credentials from `LocalMQTT/data/connection.json` and writes
-`Code/main/network_config.h`. Without that header, the firmware keeps Wi-Fi
-disabled and displays `WIFI NOT SET`.
+`Code/main/network_config.h`. That header is required for compilation; missing
+or empty network settings must be corrected before building. Older builds
+silently disabled Wi-Fi and displayed `WIFI NOT SET` when it was missing.
 
 Build without flashing with `idf.py -B build-esp32-wsl build`. ESP32 output is
 flashed over serial; do not look for a Pico-style `.uf2` file. Exit the serial
@@ -223,6 +224,8 @@ connection and release when flashing begins.
    These three points map raw touch readings to screen coordinates.
 3. Tap the idle screen to open the menu.
 4. Open **To-do List** to see tasks, completion state, and Prev/Next pages.
+   Tap and lift on a checkbox to complete/reopen a task. The box changes after
+   server confirmation; keep the server running. Offline taps are not queued.
 5. Add or change tasks in the computer browser. The tablet receives new snapshots.
 6. Open **Draw Notes** to draw. Tap and lift on **Write**, **Erase**, or **Home**.
    Erase is an area eraser, not a whole-page clear button.
@@ -231,6 +234,11 @@ The note survives Home and the 60-second idle timeout. Power loss/reset clears
 it and restarts calibration. The idle screen does not turn off the backlight.
 Task titles support up to 120 UTF-8 bytes on the server, with at most 50 tasks;
 the tablet's bitmap font substitutes `?` for unsupported characters.
+
+To-do updates use partial redraws: completion repaints only the affected checkbox
+and text; title changes clear that row. Unchanged snapshots do not repaint the
+list. Page changes repaint the list area while keeping navigation buttons.
+The display SPI clock remains at the conservative 1 MHz setting.
 
 Successful connection logs include `Wi-Fi ready`, `MQTT connected`, and
 `Received ... tasks`. Browser status distinguishes publication to the broker
@@ -248,14 +256,18 @@ Current BLE service:
 | Read characteristic | `12345678-1234-5678-1234-56789abcdef1` |
 | Greeting | `What it do` |
 
-Use a BLE GATT scanner to read the greeting. This is not a keyboard/audio
-profile or task-transfer protocol. BLE stays enabled with Wi-Fi/MQTT.
+Use a BLE GATT scanner to read the greeting and write tasks. This is a custom
+GATT service, not a keyboard/audio profile. BLE stays enabled with Wi-Fi/MQTT.
 
-The proposed portable workflow is direct iPhone-to-tablet BLE task sync, with
-optional MQTT for computer updates at home. BLE could also send Wi-Fi credentials
-without recompiling. These are two different features, neither implemented yet.
-MQTT currently runs over Wi-Fi/TCP; it does not run through the greeting service.
-A phone gateway would need explicit BLE-to-MQTT bridge code.
+Portable task entry is now available through a BLE testing app: write plain
+text to characteristic `12345678-1234-5678-1234-56789abcdef2`. Local tasks can
+be completed offline and survive phone disconnects and MQTT updates, but not
+reset. They are not uploaded to the computer yet. See [BLE setup and protocol](Code/BLE.md).
+The greeting remains at `...def1`; write status is readable at `...def3`.
+BLE Wi-Fi configuration uses characteristics `...def4` through `...def7`; see
+the BLE guide for pairing, write order, and status. Settings last until reset.
+A polished companion app and persistent network configuration are future features.
+MQTT still runs over Wi-Fi/TCP, independently of BLE.
 
 ## Data, credentials, and protocol
 
@@ -272,7 +284,11 @@ MQTT uses retained QoS 1 snapshots at
 `notepad/v1/devices/tablet-001/state`. The tablet publishes heartbeat/received
 revision at `notepad/v1/devices/tablet-001/presence`, including an offline Last
 Will. The service is allowed to publish state; tablet credentials cannot edit
-it. Server restart reconstructs retained state from SQLite.
+it directly. Completion requests use non-retained QoS 1 messages at
+`notepad/v1/devices/tablet-001/commands`, with an item ID, base revision, and
+explicit desired completion state. Stale requests are rejected and current
+state is republished; repeated messages cannot toggle a task twice.
+Server restart reconstructs retained state from SQLite.
 
 This is a trusted-LAN prototype using unencrypted MQTT. Do not port-forward it
 to the internet. The browser editor is localhost-only, so opening the same URL
@@ -334,10 +350,10 @@ topic permissions, and presence. Hardware tests remain necessary after flashing.
 
 ## Next milestones
 
-1. Confirm Wi-Fi/MQTT task delivery on the physical tablet.
-2. Design direct BLE task transfer and an iPhone companion app for text/dictation.
+1. Confirm portable BLE task entry on the physical tablet and iPhone.
+2. Add an iPhone companion app and synchronize device-local tasks with the server.
 3. Add shared task IDs, acknowledgments, and conflict handling before two-way edits.
-4. Add BLE Wi-Fi configuration and real clock/timezone synchronization.
+4. Add persistent Wi-Fi configuration and real clock/timezone synchronization.
 5. Add flash persistence for calibration, tasks, and note pages when ready.
 6. Add multiple notes and export; handwriting-to-text is a later feature.
 
