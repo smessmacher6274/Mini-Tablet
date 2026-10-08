@@ -1,4 +1,5 @@
 #include "network.h"
+#include "test_mode.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
@@ -171,6 +172,10 @@ static void connection_task(void *arg) {
 }
 
 void tablet_network_start(void) {
+    if (TABLET_BLE_TEST_MODE) {
+        ESP_LOGI(TAG, "BLE-only test: Wi-Fi and MQTT disabled");
+        return;
+    }
     updates = xQueueCreate(1, sizeof(todo_snapshot_t));
     status_bits = xEventGroupCreate();
     if (!updates || !status_bits) { ESP_LOGE(TAG, "Network allocation failed"); return; }
@@ -223,6 +228,7 @@ bool tablet_network_complete(const todo_item_t *item) {
 }
 
 const char *tablet_network_status(void) {
+    if (TABLET_BLE_TEST_MODE) return "BLUETOOTH ONLY";
     if (!configured || !status_bits) return "WIFI NOT SET";
     EventBits_t bits = xEventGroupGetBits(status_bits);
     if (bits & WIFI_APPLYING) return "WIFI APPLYING";

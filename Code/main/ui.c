@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "test_mode.h"
 #include "display.h"
 #include "esp_timer.h"
 #include "network.h"
@@ -142,7 +143,7 @@ static void show(screen_t next) {
     last_input = esp_timer_get_time();
 }
 
-void ui_init(void) { show(IDLE); }
+void ui_init(void) { show(TABLET_BLE_TEST_MODE ? TODOS : IDLE); }
 
 void ui_touch(bool pressed, int x, int y) {
     int64_t now = esp_timer_get_time();
@@ -221,7 +222,7 @@ void ui_tick(void) {
         display_rect(0, 44, 320, 20, 0xffff);
         display_label(22, 46, last_status, 2, INK);
     }
-    if (screen != IDLE && esp_timer_get_time() - last_input >= 60000000)
+    if (!TABLET_BLE_TEST_MODE && screen != IDLE && esp_timer_get_time() - last_input >= 60000000)
         show(IDLE);
     if (screen == IDLE) update_clock();
 }

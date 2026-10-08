@@ -1,5 +1,64 @@
 # Portable task entry over BLE
 
+## Current Bluetooth stability test
+
+October 7 follow-up: phone Bluetooth reset did not restore service discovery
+after a failed link. Heap totals alone cannot rule out fixed packet-pool
+exhaustion. Test mode now logs `Host probe` and all registered `Pool` free/minimum
+counts every ten seconds while connected, plus pool counts at connect/disconnect
+and MTU negotiation. RSSI is valid only when `rssi_rc=0`. A continuing host probe
+shows the host event queue is running; it does not prove ATT traffic is flowing.
+Capture a complete fresh boot, successful writes, failure, and reconnect without
+power cycling so pool recovery and service discovery can be compared.
+
+October 6 read-stress observation: with Wi-Fi/MQTT disabled and no encryption,
+three writes succeeded before rapid reads preceded a supervision timeout.
+Subsequent links timed out in about 1.1 seconds until power cycling. The initial
+connection used a 30ms interval and only a 720ms supervision timeout. Writes
+after the power cycle were reported stable (eight by user, seven in pasted log).
+This narrows the reproduction but does not establish why radio packets stopped.
+
+Firmware now requests a 30-45ms interval, zero latency and 6000ms supervision
+timeout on each successful connection. The phone may reject or alter the
+request: verify `Connection update status: 0` and the following link parameters
+(`timeout=600` means six seconds). A longer timeout tolerates brief stalls; it
+does not repair a stalled controller. Read diagnostics count greeting/status
+requests and response-allocation errors, sample heap/host stack availability,
+and report counts at disconnect. Status reads use the BLE-owned task count,
+avoiding the task model mutex. No task text is included in these diagnostics.
+
+Next hardware check: first leave idle connected, then read f1 repeatedly,
+then f3 repeatedly, then mix reads and writes. Record which characteristic
+triggers failure, the timing update, read stats, and disconnect summary. After
+a failure, stop reads and reconnect without resetting; verify task count remains.
+
+`main/test_mode.h` defaults `TABLET_BLE_TEST_MODE` to 1. Boot opens the task
+list directly, skips calibration, disables uncalibrated touch, and prevents
+the idle clock transition. Set it to 0 and rebuild to restore normal operation.
+Wi-Fi and MQTT are disabled in this mode; the status reads `BLUETOOTH ONLY`.
+Encrypted Wi-Fi credential characteristics f4-f7 are omitted, so task testing
+does not require pairing. Forget the previous NoteTablet-BLE entry in phone
+Bluetooth settings once, then reconnect and rediscover services in nRF Connect.
+Use f2 to write tasks and f3 to read status. Do not request pairing for this test.
+
+Identical successful task writes repeated within two seconds return `OK RETRY`
+without adding a second entry. Wait at least two seconds to intentionally add
+the same title again. Failed writes are never remembered as successful retries.
+This guards rapid repeated writes; it does not remove duplicate text inside a
+single payload or merge identical tasks from MQTT.
+
+Advertising restart failures now log and retry on the host event queue instead
+of aborting. Encryption failures and disconnect reasons appear in serial logs.
+Task entry does not require pairing; Wi-Fi configuration still requires it.
+
+Hardware checks: send two different short tasks, read f3 to verify count 2,
+repeat a title rapidly to check `OK RETRY`, and leave connected for 30 minutes.
+Repeat with phone Wi-Fi on/off. Disconnect
+and reconnect ten times without resetting the board. Test credential pairing
+separately. Capture serial output around any disconnect, reset, or failed
+reconnection. Logs include connection interval, supervision timeout and
+encryption/bond status. Connection stability requires hardware verification.
+
 This first version uses an iPhone BLE testing app. No Wi-Fi, MQTT server,
 internet, or companion app is needed to add and check off a Bluetooth task.
 Normal SMS/iMessage cannot write this service.
@@ -15,7 +74,7 @@ idf.py -B build-esp32-wsl -p /dev/ttyUSB0 flash monitor
 
 Keep your existing network configuration. Wi-Fi may keep attempting to connect
 while away from home; BLE task entry does not wait for it. Finish the three-cross
-calibration, then open To-do. This is a firmware-only change; no server restart
+calibration, then open To-do when test mode is disabled. This is a firmware-only change; no server restart
 or server upgrade is needed.
 
 ## Send a task from iPhone
@@ -90,7 +149,7 @@ or authenticated provisioning is still needed for a finished product.
 ## What is stored and synchronized
 
 - Up to **20 Bluetooth tasks**, separate from the server's maximum of 50.
-- Each successful write adds one task, including repeated identical titles.
+- Each successful write adds one task except identical retries within two seconds.
 - BLE tasks and their completion state are stored in **RAM only**. Disconnecting
   the phone or reconnecting Wi-Fi keeps them; resetting/powering off loses them.
 - Incoming MQTT snapshots cannot erase or replace Bluetooth tasks.

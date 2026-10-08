@@ -1,5 +1,18 @@
 # Note tablet roadmap
 
+## Current priorities (October 5, 2026)
+
+1. Stabilize Bluetooth, investigate duplicate task entry, and verify reconnects
+   without power cycling. Temporarily skip calibration and idle clock switching.
+2. Wire and bring up microSD external storage after confirming module/pin usage.
+3. Persist received MQTT task state on the server and/or microSD.
+4. Save touch calibration to flash/SD and restore it at boot.
+5. Improve display refresh rates.
+6. Synchronize and finish the clock.
+
+Bluetooth soak-test mode is currently enabled in `main/test_mode.h`;
+the normal product flow below resumes when it is disabled.
+
 ## Product flow
 
 Boot -> touch calibration -> idle clock -> tap -> menu -> To-do or Notes.

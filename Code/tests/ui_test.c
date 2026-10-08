@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "ui.h"
+#include "test_mode.h"
 #include "display.h"
 #include "network.h"
 #include "tablet_tasks.h"
@@ -52,6 +53,21 @@ static void release(void) {
 static void tap(int x, int y) { release(); ui_touch(true, x, y); }
 int main(void) {
     ui_init();
+    if (TABLET_BLE_TEST_MODE) {
+        assert(!strcmp(page, "WAITING FOR LIST"));
+        update.count = 1;
+        strcpy(update.items[0].title, "Bluetooth test task");
+        pending = true; ui_tick();
+        assert(!strcmp(pagination, "PAGE 1 / 1"));
+        int before_draws = draws;
+        now += 600000000;
+        ui_tick();
+        assert(draws == before_draws); // No idle clock or duplicate redraw.
+        pending = true; ui_tick();
+        assert(draws == before_draws);
+        puts("BLE test UI: direct task screen, no idle, stable redraw passed");
+        return 0;
+    }
     assert(!strcmp(page, "TAP TO OPEN"));
     tap(100, 260); // Wake; same held pen must not also open Notes.
     assert(!strcmp(page, "YOUR TABLET"));

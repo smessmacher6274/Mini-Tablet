@@ -2,6 +2,7 @@
 #include "board.h"
 #include "display.h"
 #include "ui.h"
+#include "test_mode.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
@@ -109,6 +110,14 @@ static void calibrate(void) {
 }
 
 void touch_drawing_run(void) {
+    if (TABLET_BLE_TEST_MODE) {
+        ESP_LOGI(TAG, "BLE test mode: calibration and touch disabled");
+        ui_init();
+        for (;;) {
+            ui_tick();
+            pause_sample();
+        }
+    }
     gpio_config_t irq = {
         .pin_bit_mask = 1ULL << TOUCH_IRQ, .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,

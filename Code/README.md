@@ -1,5 +1,11 @@
 # ESP32 note tablet: portrait ST7796S + BLE
 
+Current build defaults to Bluetooth test mode: boot directly to To-do, skip
+calibration, disable touch, Wi-Fi and MQTT, and keep the screen awake.
+Wi-Fi credential characteristics are omitted during this test. See [BLE.md](BLE.md)
+for the stability checks. Set `TABLET_BLE_TEST_MODE` to 0 in `main/test_mode.h`
+to restore the calibration/menu/idle behavior described below.
+
 ## Current milestone: MQTT task display
 
 See `PLAN.md` for the iPhone / MQTT roadmap and synchronization design.
