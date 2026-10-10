@@ -1,4 +1,9 @@
 #include "ble.h"
+#include "ble_list.h"
+#include "sdkconfig.h"
+#if CONFIG_BT_NIMBLE_HS_FLOW_CTRL
+#error "Disable CONFIG_BT_NIMBLE_HS_FLOW_CTRL: enabled flow control reproduced BLE stalls."
+#endif
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -16,7 +21,6 @@ static const char *TAG = "ble_only";
 static uint8_t address_type;
 static bool connected;
 static unsigned writes, reads;
-static char last_write[121];
 static struct ble_npl_callout retry;
 static void log_packet_pools(void) {
     struct os_mempool *pool = NULL;
@@ -55,8 +59,8 @@ static int access_value(uint16_t connection, uint16_t attribute,
         char value[121];
         if (ble_hs_mbuf_to_flat(ctx->om, value, 120, &length) || length != expected)
             return BLE_ATT_ERR_UNLIKELY;
-        memcpy(last_write, value, length);
-        last_write[length] = '\0';
+        if (!ble_list_valid(value, length)) return 0x80;
+        if (!ble_list_submit(value, length, writes + 1)) return BLE_ATT_ERR_INSUFFICIENT_RES;
         ++writes;
         ESP_LOGI(TAG, "Write accepted count=%u bytes=%u", writes, length);
         log_packet_pools();

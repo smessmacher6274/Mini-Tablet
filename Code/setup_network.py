@@ -18,8 +18,8 @@ def main():
     ipaddress.IPv4Address(host)
     values = {"TABLET_WIFI_SSID": ssid, "TABLET_WIFI_PASSWORD": password,
               "TABLET_MQTT_URI": f'mqtt://{host}:{config["mqtt_port"]}',
-              "TABLET_MQTT_USER": config["device_user"],
-              "TABLET_MQTT_PASSWORD": config["device_password"]}
+              "TABLET_MQTT_USER": config.get("device_user", ""),
+              "TABLET_MQTT_PASSWORD": config.get("device_password", "")}
     # Encode C string literals with octal bytes so arbitrary UTF-8 is preserved.
     def literal(text):
         return '"' + ''.join(f'\\{byte:03o}' for byte in text.encode()) + '"'

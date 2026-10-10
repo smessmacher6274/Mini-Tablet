@@ -57,6 +57,10 @@ void local_tasks_merge(const local_tasks_t *local, const todo_snapshot_t *remote
     out->count = 0;
     // Local portable tasks first, then the unchanged server list.
     for (unsigned n = 0; n < local->count; ++n) out->items[out->count++] = local->items[n];
-    for (unsigned n = 0; n < remote->count && n < TODO_MAX_ITEMS; ++n)
-        out->items[out->count++] = remote->items[n];
+    for (unsigned n = 0; n < remote->count && n < TODO_MAX_ITEMS; ++n) {
+        bool pending = false;
+        for (unsigned i = 0; i < local->count; ++i)
+            if (!strcmp(local->items[i].id, remote->items[n].id)) { pending = true; break; }
+        if (!pending) out->items[out->count++] = remote->items[n];
+    }
 }

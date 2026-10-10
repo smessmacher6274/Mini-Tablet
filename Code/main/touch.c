@@ -1,4 +1,5 @@
 #include "touch.h"
+#include "touch_calibration.h"
 #include "board.h"
 #include "display.h"
 #include "ui.h"
@@ -6,9 +7,12 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_log.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 static spi_device_handle_t touch;
@@ -16,6 +20,52 @@ static const char *TAG = "pen";
 typedef struct { int x, y; } point_t;
 static point_t origin;
 static float ax, bx, ay, by;
+static bool hardware_initialized;
+static bool nvs_ready;
+
+static void apply_calibration(const touch_calibration_blob_t *c) {
+    origin = (point_t){c->origin_x, c->origin_y};
+    ax = c->ax; bx = c->bx; ay = c->ay; by = c->by;
+}
+
+static bool load_calibration(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("touch", NVS_READONLY, &handle);
+    if (err != ESP_OK) return false;
+    touch_calibration_blob_t c;
+    size_t len = sizeof(c);
+    err = nvs_get_blob(handle, "cal_v1", &c, &len);
+    nvs_close(handle);
+    if (err != ESP_OK || len != sizeof(c) || !touch_calibration_valid(&c)) {
+        ESP_LOGW(TAG, "Saved calibration missing or invalid; calibrating manually");
+        return false;
+    }
+    apply_calibration(&c);
+    ESP_LOGI(TAG, "Loaded saved touch calibration");
+    return true;
+}
+
+static void save_calibration(void) {
+    if (!nvs_ready) return;
+    touch_calibration_blob_t c = {
+        .magic = TOUCH_CAL_MAGIC, .version = TOUCH_CAL_VERSION, .size = sizeof(c),
+        .origin_x = origin.x, .origin_y = origin.y,
+        .ax = ax, .bx = bx, .ay = ay, .by = by,
+    };
+    if (!touch_calibration_valid(&c)) {
+        ESP_LOGE(TAG, "Refusing to save invalid touch calibration");
+        return;
+    }
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open("touch", NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        err = nvs_set_blob(handle, "cal_v1", &c, sizeof(c));
+        if (err == ESP_OK) err = nvs_commit(handle);
+        nvs_close(handle);
+    }
+    if (err != ESP_OK) ESP_LOGE(TAG, "Could not save touch calibration: %s", esp_err_to_name(err));
+    else ESP_LOGI(TAG, "Saved touch calibration");
+}
 
 static void pause_sample(void) { vTaskDelay(pdMS_TO_TICKS(10) + 1); }
 
@@ -103,21 +153,23 @@ static void calibrate(void) {
         origin = a;
         ax = 260 * vy / det; bx = -260 * vx / det;
         ay = -420 * uy / det; by = 420 * ux / det;
+        touch_calibration_blob_t candidate = {
+            .magic = TOUCH_CAL_MAGIC, .version = TOUCH_CAL_VERSION, .size = sizeof(candidate),
+            .origin_x = origin.x, .origin_y = origin.y,
+            .ax = ax, .bx = bx, .ay = ay, .by = by,
+        };
+        if (!touch_calibration_valid(&candidate)) {
+            ESP_LOGW(TAG, "Calibration coefficients unreasonable; repeat three targets");
+            continue;
+        }
         break;
     }
     display_clear();
-    ESP_LOGI(TAG, "Canvas ready. Draw with the pen. Reset to clear/recalibrate.");
+    ESP_LOGI(TAG, "Touch calibrated. Use the Home screen Recalibrate button to recalibrate.");
 }
 
-void touch_drawing_run(void) {
-    if (TABLET_BLE_TEST_MODE) {
-        ESP_LOGI(TAG, "BLE test mode: calibration and touch disabled");
-        ui_init();
-        for (;;) {
-            ui_tick();
-            pause_sample();
-        }
-    }
+void touch_init_calibrated(void) {
+    if (hardware_initialized) return;
     gpio_config_t irq = {
         .pin_bit_mask = 1ULL << TOUCH_IRQ, .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
@@ -136,8 +188,53 @@ void touch_drawing_run(void) {
         .cs_ena_pretrans = 2, .cs_ena_posttrans = 2,
     };
     ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &dev, &touch));
+    hardware_initialized = true;
     (void)adc(0x90); // Ensure PENIRQ is enabled before waiting for a press.
+    // BLE may initialize NVS concurrently. Do not erase it on any error; fall back
+    // to interactive calibration and leave persistence disabled for this boot.
+    esp_err_t nvs_err = nvs_flash_init();
+    if (nvs_err == ESP_OK) nvs_ready = true;
+    else ESP_LOGW(TAG, "NVS unavailable (%s); using manual calibration", esp_err_to_name(nvs_err));
+    if (!nvs_ready || !load_calibration()) {
+        calibrate();
+        save_calibration();
+    }
+}
+
+void touch_recalibrate(void) {
+    if (!hardware_initialized) {
+        touch_init_calibrated();
+        return;
+    }
     calibrate();
+    save_calibration();
+}
+
+bool touch_is_down(void) { return gpio_get_level(TOUCH_IRQ) == 0; }
+
+bool touch_read(int *x, int *y) {
+    point_t p;
+    if (!sample(&p)) return false;
+    float rx = p.x - origin.x, ry = p.y - origin.y;
+    *x = (int)(30 + ax * rx + bx * ry);
+    *y = (int)(30 + ay * rx + by * ry);
+    if (*x < 0) *x = 0;
+    if (*x > 319) *x = 319;
+    if (*y < 0) *y = 0;
+    if (*y > 479) *y = 479;
+    return true;
+}
+
+void touch_drawing_run(void) {
+    if (TABLET_BLE_TEST_MODE) {
+        ESP_LOGI(TAG, "BLE test mode: calibration and touch disabled");
+        ui_init();
+        for (;;) {
+            ui_tick();
+            pause_sample();
+        }
+    }
+    touch_init_calibrated();
     ui_init();
     for (;;) {
         point_t p;

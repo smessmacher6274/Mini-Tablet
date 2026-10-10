@@ -27,6 +27,10 @@ int main(void) {
     strcpy(remote.items[0].title, "From computer");
     local_tasks_merge(&local, &remote, &merged);
     assert(merged.count == 3 && merged.items[0].local && !merged.items[2].local);
+    strcpy(remote.items[0].id, local.items[0].id);
+    local_tasks_merge(&local, &remote, &merged);
+    assert(merged.count == 2); // Pending BLE item replaces its server echo.
+    remote.items[0].id[0] = 0;
     remote.count = 0; // Server deletion/reconnect does not discard BLE tasks.
     local_tasks_merge(&local, &remote, &merged);
     assert(merged.count == 2);

@@ -210,7 +210,7 @@ void display_stroke(int x0, int y0, int x1, int y1, bool erasing) {
     }
 }
 
-void display_hello_world(void) {
+void display_init(void) {
     // Conservative clock for breadboard jumper wires; SPI mode 0, MSB first.
     const int pins[] = {CS, DC, RESET};
     for (unsigned i = 0; i < 3; ++i) {
@@ -257,6 +257,12 @@ void display_hello_world(void) {
     CMD(0xF0, 0x3C);
     CMD(0xF0, 0x69);
     command(0x20, NULL, 0); // Inversion off
+    command(0x29, NULL, 0); // Display on
+    sleep_ms(20);
+}
+
+void display_hello_world(void) {
+    display_init();
     fill(0, 0, WIDTH, HEIGHT, 0x0843);
     text(73, 170, "Hello", 6);
     text(55, 235, "World!", 6);

@@ -5,6 +5,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "mqtt_client.h"
+#include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
@@ -18,7 +19,7 @@
 _Static_assert(sizeof(TABLET_WIFI_SSID) > 1 && sizeof(TABLET_WIFI_SSID) <= 33,
                "Run setup_network.py: Wi-Fi SSID must be 1-32 bytes");
 _Static_assert(sizeof(TABLET_WIFI_PASSWORD) <= 64, "Wi-Fi password too long");
-_Static_assert(sizeof(TABLET_MQTT_URI) > 1 && sizeof(TABLET_MQTT_PASSWORD) > 1,
+_Static_assert(sizeof(TABLET_MQTT_URI) > 1,
                "Run setup_network.py: MQTT configuration is missing");
 
 #define WIFI_READY BIT0
@@ -152,8 +153,8 @@ static void connection_task(void *arg) {
     xEventGroupWaitBits(status_bits, WIFI_READY, pdFALSE, pdTRUE, portMAX_DELAY);
     esp_mqtt_client_config_t config = {
         .broker.address.uri = TABLET_MQTT_URI,
-        .credentials.username = TABLET_MQTT_USER,
-        .credentials.authentication.password = TABLET_MQTT_PASSWORD,
+        .credentials.username = TABLET_MQTT_USER[0] ? TABLET_MQTT_USER : NULL,
+        .credentials.authentication.password = TABLET_MQTT_PASSWORD[0] ? TABLET_MQTT_PASSWORD : NULL,
         .credentials.client_id = "note-tablet-001",
         .session.keepalive = 30,
         .session.last_will.topic = "notepad/v1/devices/tablet-001/presence",
@@ -172,14 +173,10 @@ static void connection_task(void *arg) {
 }
 
 void tablet_network_start(void) {
-    if (TABLET_BLE_TEST_MODE) {
-        ESP_LOGI(TAG, "BLE-only test: Wi-Fi and MQTT disabled");
-        return;
-    }
     updates = xQueueCreate(1, sizeof(todo_snapshot_t));
     status_bits = xEventGroupCreate();
     if (!updates || !status_bits) { ESP_LOGE(TAG, "Network allocation failed"); return; }
-    configured = strlen(TABLET_WIFI_SSID) && strlen(TABLET_MQTT_URI) && strlen(TABLET_MQTT_PASSWORD);
+    configured = strlen(TABLET_WIFI_SSID) && strlen(TABLET_MQTT_URI);
     if (!configured) { ESP_LOGW(TAG, "Run python3 setup_network.py before flashing to enable Wi-Fi"); return; }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -227,8 +224,22 @@ bool tablet_network_complete(const todo_item_t *item) {
                                    payload, 0, 1, 0, true) >= 0;
 }
 
+bool tablet_network_create(const todo_item_t *item) {
+    if (!mqtt || !status_bits || !(xEventGroupGetBits(status_bits) & MQTT_READY)) return false;
+    cJSON *command = cJSON_CreateObject();
+    if (!command) return false;
+    bool valid = cJSON_AddStringToObject(command, "op", "create") &&
+                 cJSON_AddStringToObject(command, "request_id", item->id) &&
+                 cJSON_AddStringToObject(command, "title", item->title);
+    char *payload = valid ? cJSON_PrintUnformatted(command) : NULL;
+    bool sent = payload && esp_mqtt_client_enqueue(mqtt,
+        "notepad/v1/devices/tablet-001/commands", payload, 0, 1, 0, true) >= 0;
+    cJSON_free(payload);
+    cJSON_Delete(command);
+    return sent;
+}
+
 const char *tablet_network_status(void) {
-    if (TABLET_BLE_TEST_MODE) return "BLUETOOTH ONLY";
     if (!configured || !status_bits) return "WIFI NOT SET";
     EventBits_t bits = xEventGroupGetBits(status_bits);
     if (bits & WIFI_APPLYING) return "WIFI APPLYING";

@@ -5,6 +5,7 @@
 
 // Initialize ESP-IDF SPI2/ST7796S and draw once, before BLE starts.
 void display_hello_world(void);
+void display_init(void);
 void display_clear(void);
 void display_target(int x, int y);
 void display_toolbar(bool erasing);
