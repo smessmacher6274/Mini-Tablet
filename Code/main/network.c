@@ -27,17 +27,22 @@ _Static_assert(sizeof(TABLET_MQTT_URI) > 1,
 #define WIFI_FAILED BIT2
 #define WIFI_APPLYING BIT3
 #define WIFI_SERVICE_READY BIT4
+#define SNAPSHOT_READY BIT5
 ESP_EVENT_DEFINE_BASE(TABLET_WIFI_EVENT);
 static bool switching_wifi;
 static unsigned wifi_failures;
 static const char *TAG = "tablet_net";
 static const char *STATE_TOPIC = "notepad/v1/devices/tablet-001/state";
 static const char *PRESENCE_TOPIC = "notepad/v1/devices/tablet-001/presence";
+static const char *COMMAND_TOPIC = "notepad/v1/devices/tablet-001/commands";
+static const char *RESULTS_TOPIC = "notepad/v1/devices/tablet-001/results";
 static QueueHandle_t updates;
+static QueueHandle_t results;
 static EventGroupHandle_t status_bits;
 static esp_mqtt_client_handle_t mqtt;
 static char *incoming;
 static size_t expected, received;
+static unsigned incoming_kind;
 static int32_t accepted_revision = -1;
 static portMUX_TYPE revision_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool configured;
@@ -53,15 +58,39 @@ static void presence(void) {
 }
 
 static void reset_incoming(void) {
-    free(incoming); incoming = NULL; expected = received = 0;
+    free(incoming); incoming = NULL; expected = received = 0; incoming_kind = 0;
+}
+
+static bool parse_result(const char *data, size_t length, tablet_command_result_t *out) {
+    if (!data || !out || !length || strlen(data) != length) return false;
+    cJSON *root = cJSON_ParseWithLengthOpts(data, length + 1, NULL, true);
+    if (!root) return false;
+    cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "command_id");
+    cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
+    cJSON *revision = cJSON_GetObjectItemCaseSensitive(root, "revision");
+    bool valid = cJSON_IsString(id) && strlen(id->valuestring) == 36 &&
+        cJSON_IsString(status) && cJSON_IsNumber(revision) && revision->valueint >= 0 &&
+        revision->valuedouble == revision->valueint && revision->valueint <= INT32_MAX;
+    if (valid) {
+        memcpy(out->command_id, id->valuestring, 37);
+        out->revision = revision->valueint;
+        if (!strcmp(status->valuestring, "applied")) out->status = TABLET_RESULT_APPLIED;
+        else if (!strcmp(status->valuestring, "conflict")) out->status = TABLET_RESULT_CONFLICT;
+        else if (!strcmp(status->valuestring, "rejected")) out->status = TABLET_RESULT_REJECTED;
+        else valid = false;
+    }
+    cJSON_Delete(root);
+    return valid;
 }
 
 static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
     esp_mqtt_event_handle_t e = data;
     if (id == MQTT_EVENT_CONNECTED) {
+        xEventGroupClearBits(status_bits, SNAPSHOT_READY);
         xEventGroupSetBits(status_bits, MQTT_READY);
-        ESP_LOGI(TAG, "MQTT connected; subscribing to task list");
+        ESP_LOGI(TAG, "MQTT connected; waiting for fresh task list");
         esp_mqtt_client_subscribe(mqtt, STATE_TOPIC, 1);
+        esp_mqtt_client_subscribe(mqtt, RESULTS_TOPIC, 1);
         presence();
     } else if (id == MQTT_EVENT_DISCONNECTED) {
         xEventGroupClearBits(status_bits, MQTT_READY);
@@ -70,8 +99,10 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     } else if (id == MQTT_EVENT_DATA) {
         if (e->current_data_offset == 0) {
             reset_incoming();
-            if (e->topic_len != strlen(STATE_TOPIC) || memcmp(e->topic, STATE_TOPIC, e->topic_len) ||
-                e->total_data_len <= 0 || e->total_data_len > TODO_MAX_MESSAGE) return;
+            if (e->topic_len == strlen(STATE_TOPIC) && !memcmp(e->topic, STATE_TOPIC, e->topic_len)) incoming_kind = 1;
+            else if (e->topic_len == strlen(RESULTS_TOPIC) && !memcmp(e->topic, RESULTS_TOPIC, e->topic_len)) incoming_kind = 2;
+            else return;
+            if (e->total_data_len <= 0 || e->total_data_len > TODO_MAX_MESSAGE) { incoming_kind = 0; return; }
             expected = e->total_data_len;
             incoming = malloc(expected + 1);
             if (!incoming) { expected = 0; ESP_LOGE(TAG, "No memory for task update"); return; }
@@ -85,19 +116,28 @@ static void mqtt_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         received += e->data_len;
         if (received == expected) {
             incoming[received] = '\0';
-            todo_snapshot_t *snapshot = calloc(1, sizeof(*snapshot));
-            if (snapshot && todo_parse(incoming, received, snapshot)) {
+            if (incoming_kind == 1) {
+              todo_snapshot_t *snapshot = calloc(1, sizeof(*snapshot));
+              if (snapshot && todo_parse(incoming, received, snapshot)) {
+                bool first = !(xEventGroupGetBits(status_bits) & SNAPSHOT_READY);
                 portENTER_CRITICAL(&revision_lock);
-                bool newer = snapshot->revision > accepted_revision;
+                bool newer = (first && snapshot->revision >= accepted_revision) ||
+                             snapshot->revision > accepted_revision;
                 if (newer) accepted_revision = snapshot->revision;
                 portEXIT_CRITICAL(&revision_lock);
                 if (newer) {
                     xQueueOverwrite(updates, snapshot);
+                    xEventGroupSetBits(status_bits, SNAPSHOT_READY);
                     ESP_LOGI(TAG, "Received %u tasks, revision %ld", snapshot->count, (long)snapshot->revision);
                 }
                 presence();
-            } else ESP_LOGW(TAG, "Rejected invalid task snapshot");
-            free(snapshot);
+              } else ESP_LOGW(TAG, "Rejected invalid task snapshot");
+              free(snapshot);
+            } else {
+                tablet_command_result_t result;
+                if (parse_result(incoming, received, &result)) xQueueSend(results, &result, 0);
+                else ESP_LOGW(TAG, "Rejected invalid command result");
+            }
             reset_incoming();
         }
     } else if (id == MQTT_EVENT_ERROR) {
@@ -134,7 +174,7 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         esp_wifi_connect();
     }
     else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        xEventGroupClearBits(status_bits, WIFI_READY | MQTT_READY);
+        xEventGroupClearBits(status_bits, WIFI_READY | MQTT_READY | SNAPSHOT_READY);
         if (switching_wifi) return;
         if (++wifi_failures >= 5) xEventGroupSetBits(status_bits, WIFI_FAILED);
         wifi_event_sta_disconnected_t *event = data;
@@ -174,8 +214,9 @@ static void connection_task(void *arg) {
 
 void tablet_network_start(void) {
     updates = xQueueCreate(1, sizeof(todo_snapshot_t));
+    results = xQueueCreate(20, sizeof(tablet_command_result_t));
     status_bits = xEventGroupCreate();
-    if (!updates || !status_bits) { ESP_LOGE(TAG, "Network allocation failed"); return; }
+    if (!updates || !results || !status_bits) { ESP_LOGE(TAG, "Network allocation failed"); return; }
     configured = strlen(TABLET_WIFI_SSID) && strlen(TABLET_MQTT_URI);
     if (!configured) { ESP_LOGW(TAG, "Run python3 setup_network.py before flashing to enable Wi-Fi"); return; }
     ESP_ERROR_CHECK(esp_netif_init());
@@ -213,27 +254,40 @@ bool tablet_network_take(todo_snapshot_t *snapshot) {
     return updates && xQueueReceive(updates, snapshot, 0) == pdTRUE;
 }
 
-bool tablet_network_complete(const todo_item_t *item) {
-    if (!mqtt || !status_bits || !(xEventGroupGetBits(status_bits) & MQTT_READY)) return false;
-    char payload[180];
-    snprintf(payload, sizeof(payload),
-             "{\"id\":\"%s\",\"base_revision\":%ld,\"completed\":%s}",
-             item->id, (long)item->revision, item->completed ? "false" : "true");
-    // Explicit desired state plus base revision makes QoS1 duplicates harmless.
-    return esp_mqtt_client_enqueue(mqtt, "notepad/v1/devices/tablet-001/commands",
-                                   payload, 0, 1, 0, true) >= 0;
+bool tablet_network_take_result(tablet_command_result_t *result) {
+    return results && xQueueReceive(results, result, 0) == pdTRUE;
 }
 
-bool tablet_network_create(const todo_item_t *item) {
-    if (!mqtt || !status_bits || !(xEventGroupGetBits(status_bits) & MQTT_READY)) return false;
+bool tablet_network_snapshot_ready(void) {
+    return status_bits && (xEventGroupGetBits(status_bits) & (MQTT_READY | SNAPSHOT_READY)) == (MQTT_READY | SNAPSHOT_READY);
+}
+
+void tablet_network_set_cached_revision(int32_t revision) {
+    portENTER_CRITICAL(&revision_lock);
+    if (revision > accepted_revision) accepted_revision = revision;
+    portEXIT_CRITICAL(&revision_lock);
+}
+
+bool tablet_network_send_command(const tablet_command_t *request) {
+    if (!request || !mqtt || !tablet_network_snapshot_ready()) return false;
     cJSON *command = cJSON_CreateObject();
     if (!command) return false;
-    bool valid = cJSON_AddStringToObject(command, "op", "create") &&
-                 cJSON_AddStringToObject(command, "request_id", item->id) &&
-                 cJSON_AddStringToObject(command, "title", item->title);
+    bool valid;
+    if (request->op == TABLET_COMMAND_CREATE) {
+        valid = cJSON_AddStringToObject(command, "op", "create") &&
+                cJSON_AddStringToObject(command, "request_id", request->item.id) &&
+                cJSON_AddStringToObject(command, "title", request->item.title) &&
+                cJSON_AddStringToObject(command, "command_id", request->command_id);
+    } else {
+        valid = cJSON_AddStringToObject(command, "op", "update") &&
+                cJSON_AddStringToObject(command, "id", request->item.id) &&
+                cJSON_AddNumberToObject(command, "base_revision", request->base_revision) &&
+                cJSON_AddBoolToObject(command, "completed", request->completed) &&
+                cJSON_AddStringToObject(command, "command_id", request->command_id);
+    }
     char *payload = valid ? cJSON_PrintUnformatted(command) : NULL;
     bool sent = payload && esp_mqtt_client_enqueue(mqtt,
-        "notepad/v1/devices/tablet-001/commands", payload, 0, 1, 0, true) >= 0;
+        COMMAND_TOPIC, payload, 0, 1, 0, false) >= 0;
     cJSON_free(payload);
     cJSON_Delete(command);
     return sent;

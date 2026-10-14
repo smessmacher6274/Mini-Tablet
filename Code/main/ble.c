@@ -363,11 +363,7 @@ static void host_task(void *arg) {
 void tablet_ble_start(void) {
     local_count = tablet_tasks_local_count();
     esp_err_t rc = nvs_flash_init();
-    if (rc == ESP_ERR_NVS_NO_FREE_PAGES || rc == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        // This prototype stores no user notes in NVS yet.
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        rc = nvs_flash_init();
-    }
+    // Preserve calibration and task data; initialization errors require diagnosis.
     ESP_ERROR_CHECK(rc);
     ESP_ERROR_CHECK(nimble_port_init());
     ble_npl_callout_init(&advertising_retry, nimble_port_get_dflt_eventq(),

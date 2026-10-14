@@ -365,7 +365,7 @@ static void list_task(void *arg) {
             accept_snapshot(&incoming);
         }
         const char *status = message_until && (int32_t)(message_until - xTaskGetTickCount()) > 0
-                            ? "OFFLINE: TRY AGAIN" : tablet_network_status();
+                            ? "TASK NOT SAVED: RETRY" : tablet_network_status();
         if (strcmp(last_status, status)) {
             snprintf(last_status, sizeof(last_status), "%s", status);
             update_status(status);
